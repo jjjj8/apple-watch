@@ -161,14 +161,12 @@ final class Recorder: NSObject, ObservableObject {
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
             // One analysis every ~3 seconds is enough for snoring and saves battery.
             let desired = CMTime(seconds: 3, preferredTimescale: 1000)
-            let constraint = request.windowDurationConstraint
-            switch constraint.type {
-            case .range:
-                if CMTimeRangeContainsTime(constraint.durationRange, time: desired) {
+            switch request.windowDurationConstraint {
+            case .durationRange(let range):
+                if CMTimeRangeContainsTime(range, time: desired) {
                     request.windowDuration = desired
                 }
-            case .enumerated:
-                let options = constraint.enumeratedDurations.map { $0.timeValue }
+            case .enumeratedDurations(let options):
                 if let best = options.min(by: { abs($0.seconds - 3) < abs($1.seconds - 3) }) {
                     request.windowDuration = best
                 }
