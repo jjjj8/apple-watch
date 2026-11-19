@@ -1,0 +1,72 @@
+name: Build watch app
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Show Xcode version
+        run: xcodebuild -version && xcrun --sdk watchos --show-sdk-version
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for watchOS simulator (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild -project SleepSound.xcodeproj -scheme SleepSound \
+            -destination 'generic/platform=watchOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | grep -E "error:|warning:|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Build for real watch (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild -project SleepSound.xcodeproj -scheme SleepSound \
+            -destination 'generic/platform=watchOS' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build-device.log | grep -E "error:|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build-device.log
+
+      - name: Save generated project to the repo
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f SleepSound.xcodeproj SleepSound/Info.plist
+          if git diff --cached --quiet; then
+            echo "Project unchanged"
+          else
+            git commit -m "Update generated Xcode project [skip ci]"
+            git push
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build*.log
