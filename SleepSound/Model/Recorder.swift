@@ -97,8 +97,6 @@ final class Recorder: NSObject, ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default, options: [])
-            // Ask for a low sample rate: less data to process all night.
-            try? session.setPreferredSampleRate(Self.fileSampleRate)
             try session.setActive(true)
 
             let input = engine.inputNode
