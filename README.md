@@ -12,6 +12,7 @@
 
 - macOS 15.7.9 安装包（苹果官方服务器，约 15GB）：[InstallAssistant.pkg](https://swcdn.apple.com/content/downloads/16/08/140-85388-A_3LX3Q36I6P/zxod6nr7zkovvsml6s628z44gdbc4exa5p/InstallAssistant.pkg)
 - Xcode 26.6 下载页（登录 Apple ID 后搜索 "Xcode 26.6"）：[developer.apple.com/download/all](https://developer.apple.com/download/all/)
+- Xcode 26.6 直接下载（先在上面那个页面登录 Apple ID，再点这个）：[Xcode_26.6.xip](https://download.developer.apple.com/Developer_Tools/Xcode_26.6/Xcode_26.6.xip)
 - 本项目代码 ZIP：[下载](https://github.com/jjjj8/apple-watch/archive/refs/heads/main.zip)
 
 ## 它做什么
