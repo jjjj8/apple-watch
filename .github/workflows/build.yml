@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -20,16 +20,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Show Xcode version
         run: xcodebuild -version && xcrun --sdk watchos --show-sdk-version
-
-      - name: Generate Xcode project
-        run: |
-          brew install xcodegen
-          xcodegen generate
 
       - name: Build for watchOS simulator (no signing)
         run: |
@@ -50,19 +43,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build | tee build-device.log | grep -E "error:|BUILD" || true
           grep -q "BUILD SUCCEEDED" build-device.log
-
-      - name: Save generated project to the repo
-        if: github.ref == 'refs/heads/main'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f SleepSound.xcodeproj SleepSound/Info.plist
-          if git diff --cached --quiet; then
-            echo "Project unchanged"
-          else
-            git commit -m "Update generated Xcode project [skip ci]"
-            git push
-          fi
 
       - name: Upload logs
         if: always()
