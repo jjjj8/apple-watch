@@ -12,6 +12,9 @@ struct ReportView: View {
                 row("开始", Format.clock(night.start))
                 row("结束", Format.clock(night.end))
                 row("时长", Format.duration(night.duration))
+                if let saver = night.saverMode {
+                    row("模式", saver ? "省电" : "完整录音")
+                }
                 if !night.stoppedByUser {
                     Text("没有正常停止：App 可能被系统关闭了。结束时间是最后一条记录的时间。")
                         .font(.footnote).foregroundStyle(.orange)
@@ -78,6 +81,7 @@ struct ReportView: View {
 
             Section {
                 row("占用空间", String(format: "%.1f MB", night.folderSizeMB))
+                row("音频文件", "\(night.segments.count) 个")
                 row("大声次数", "\(night.loudCount)")
                 Button("删除这晚的记录", role: .destructive) { confirmDelete = true }
             } footer: {

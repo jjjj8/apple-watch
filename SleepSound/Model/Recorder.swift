@@ -19,6 +19,11 @@ final class Recorder: NSObject, ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var classifierAvailable = true
     @Published var permissionDenied = false
+    /// Battery saver: only analyze and save audio around sounds louder than the
+    /// room's background noise, instead of the whole night.
+    @Published var saverMode: Bool = UserDefaults.standard.object(forKey: "saverMode") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(saverMode, forKey: "saverMode") }
+    }
 
     // MARK: Tunables
     static let snoreThreshold: Double = 0.5
@@ -27,6 +32,14 @@ final class Recorder: NSObject, ObservableObject {
     static let batteryLogInterval: TimeInterval = 5 * 60
     static let gapThreshold: TimeInterval = 5
     static let fileSampleRate: Double = 16_000
+    /// Saver mode: a sound must be this many dB above the background to count.
+    static let triggerAboveFloorDB: Float = 8
+    static let triggerMinimumDB: Float = -58
+    /// Saver mode: keep analyzing/recording this long after the last loud buffer.
+    static let activeHold: TimeInterval = 8
+    /// Saver mode: audio kept from before the trigger, so the clip starts early enough.
+    static let preRollSeconds: Double = 4
+    static let maxClipLength: TimeInterval = 120
 
     // MARK: Audio objects
     private let engine = AVAudioEngine()
@@ -46,6 +59,13 @@ final class Recorder: NSObject, ObservableObject {
     private var lastLoudLog = Date.distantPast
     private var lastLevelPublish = Date.distantPast
     private var lastSnoreLog = Date.distantPast
+    private var saverActive = false          // copy of saverMode for this night
+    private var noiseFloorDB: Float = -60
+    private var activeUntil = Date.distantPast
+    private var clipOpen = false
+    private var preRoll: [(buffer: AVAudioPCMBuffer, time: AVAudioFramePosition)] = []
+    private var preRollFrames: AVAudioFrameCount = 0
+    private var clipCount = 0
 
     private var observers: [NSObjectProtocol] = []
 
@@ -77,6 +97,8 @@ final class Recorder: NSObject, ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default, options: [])
+            // Ask for a low sample rate: less data to process all night.
+            try? session.setPreferredSampleRate(Self.fileSampleRate)
             try session.setActive(true)
 
             let input = engine.inputNode
@@ -90,11 +112,20 @@ final class Recorder: NSObject, ObservableObject {
 
             setUpClassifier(format: format, log: log)
 
+            let saver = saverMode
+            log.log(.info, saver ? 1 : 0, saver ? "mode=saver" : "mode=full")
             processing.sync {
+                self.saverActive = saver
                 self.segmentIndex = 0
+                self.clipCount = 0
+                self.clipOpen = false
+                self.preRoll = []
+                self.preRollFrames = 0
+                self.noiseFloorDB = -60
+                self.activeUntil = .distantPast
                 self.lastBufferTime = nil
                 self.lastBatteryLog = Date()
-                self.openNewSegment(now: Date())
+                if !saver { self.openNewSegment(now: Date()) }
             }
 
             input.installTap(onBus: 0, bufferSize: 8192, format: format) { [weak self] buffer, time in
@@ -200,25 +231,26 @@ final class Recorder: NSObject, ObservableObject {
         }
         lastBufferTime = now
 
-        // 2. Snore classifier.
-        analyzer?.analyze(buffer, atAudioFramePosition: time.sampleTime)
-
-        // 3. Loudness.
         let db = Self.rmsDB(buffer)
         if db > Self.loudThresholdDB, now.timeIntervalSince(lastLoudLog) > 10 {
             lastLoudLog = now
             log?.log(.loud, Double(db))
         }
-        if now.timeIntervalSince(lastLevelPublish) > 1 {
+        if now.timeIntervalSince(lastLevelPublish) > 2 {
             lastLevelPublish = now
             DispatchQueue.main.async { self.levelDB = db }
         }
 
-        // 4. Save audio (rotate file every 15 minutes).
-        if now.timeIntervalSince(segmentStart) >= Self.segmentLength {
-            openNewSegment(now: now)
+        if saverActive {
+            handleSaver(buffer: buffer, time: time, db: db, now: now)
+        } else {
+            // Full mode: analyze everything, save everything (new file every 15 min).
+            analyzer?.analyze(buffer, atAudioFramePosition: time.sampleTime)
+            if now.timeIntervalSince(segmentStart) >= Self.segmentLength {
+                openNewSegment(now: now)
+            }
+            write(buffer)
         }
-        write(buffer)
 
         // 5. Battery every 5 minutes.
         if now.timeIntervalSince(lastBatteryLog) >= Self.batteryLogInterval {
@@ -230,11 +262,80 @@ final class Recorder: NSObject, ObservableObject {
         }
     }
 
-    private func openNewSegment(now: Date) {
+    /// Battery saver: stay mostly idle, wake up the classifier and the audio file
+    /// only while something louder than the room's background noise is happening.
+    private func handleSaver(buffer: AVAudioPCMBuffer, time: AVAudioTime, db: Float, now: Date) {
+        // Track the background noise level: drops fast, rises slowly.
+        if db < noiseFloorDB {
+            noiseFloorDB = 0.8 * noiseFloorDB + 0.2 * db
+        } else {
+            noiseFloorDB = 0.995 * noiseFloorDB + 0.005 * db
+        }
+        let trigger = max(noiseFloorDB + Self.triggerAboveFloorDB, Self.triggerMinimumDB)
+
+        if db > trigger {
+            if !clipOpen {
+                openClip(now: now)
+            }
+            activeUntil = now.addingTimeInterval(Self.activeHold)
+        }
+
+        if clipOpen, now < activeUntil, now.timeIntervalSince(segmentStart) < Self.maxClipLength {
+            analyzer?.analyze(buffer, atAudioFramePosition: time.sampleTime)
+            write(buffer)
+            return
+        }
+
+        if clipOpen {
+            closeClip()
+        }
+        // Idle: just remember the last few seconds in case a sound starts.
+        if let copy = Self.copy(buffer) {
+            preRoll.append((copy, time.sampleTime))
+            preRollFrames += copy.frameLength
+            let limit = AVAudioFrameCount(Self.preRollSeconds * buffer.format.sampleRate)
+            while preRollFrames > limit, preRoll.count > 1 {
+                preRollFrames -= preRoll.removeFirst().buffer.frameLength
+            }
+        }
+    }
+
+    private func openClip(now: Date) {
+        let preRollDuration = Double(preRollFrames) / (inputFormat?.sampleRate ?? Self.fileSampleRate)
+        openNewSegment(now: now.addingTimeInterval(-preRollDuration), prefix: "clip")
+        converter?.reset()
+        clipOpen = true
+        clipCount += 1
+        for item in preRoll {
+            analyzer?.analyze(item.buffer, atAudioFramePosition: item.time)
+            write(item.buffer)
+        }
+        preRoll = []
+        preRollFrames = 0
+    }
+
+    private func closeClip() {
+        audioFile = nil     // finalizes the m4a
+        converter = nil
+        clipOpen = false
+    }
+
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
+              let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = buffer.frameLength
+        let bytes = Int(buffer.frameLength) * MemoryLayout<Float>.size
+        for ch in 0..<Int(buffer.format.channelCount) {
+            memcpy(dst[ch], src[ch], bytes)
+        }
+        return out
+    }
+
+    private func openNewSegment(now: Date, prefix: String = "audio") {
         audioFile = nil
         converter = nil
         guard let folder, let inputFormat else { return }
-        let name = String(format: "audio-%03d.m4a", segmentIndex)
+        let name = String(format: "\(prefix)-%04d.m4a", segmentIndex)
         segmentIndex += 1
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,

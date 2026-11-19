@@ -50,11 +50,14 @@ struct ContentView: View {
                         .font(.headline)
                 }
                 .listItemTint(.indigo)
+                Toggle("省电模式", isOn: $recorder.saverMode)
                 if let err = recorder.lastError {
                     Text("启动失败：\(err)").font(.footnote).foregroundStyle(.red)
                 }
             } footer: {
-                Text("睡前点开始，起床后点停止。仅用于测试，不是医疗诊断。")
+                Text(recorder.saverMode
+                     ? "省电模式：只在有声音时识别和保存录音。睡前点开始，起床后点停止。仅用于测试，不是医疗诊断。"
+                     : "完整录音：整晚都保存，更耗电。睡前点开始，起床后点停止。仅用于测试，不是医疗诊断。")
             }
 
             if !nights.isEmpty {

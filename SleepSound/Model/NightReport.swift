@@ -32,6 +32,7 @@ struct NightReport: Identifiable {
     var loudCount = 0
     var errors: [LogEvent] = []
     var segments: [AudioSegment] = []
+    var saverMode: Bool?
 
     /// Episodes closer than this are merged into one.
     static let episodeMergeSeconds: TimeInterval = 30
@@ -72,6 +73,8 @@ struct NightReport: Identifiable {
                 loudCount += 1
             case .error:
                 errors.append(e)
+            case .info where e.note.hasPrefix("mode="):
+                saverMode = e.note == "mode=saver"
             case .segment:
                 segments.append(AudioSegment(fileName: e.note, start: e.time))
             default:
